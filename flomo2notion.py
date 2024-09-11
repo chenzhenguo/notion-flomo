@@ -1,6 +1,7 @@
 import os
 import random
 import time
+import notion_client
 
 import html2text
 from markdownify import markdownify
@@ -19,32 +20,38 @@ class Flomo2Notion:
         self.notion_helper = NotionHelper()
         self.uploader = Md2NotionUploader()
 
-    def insert_memo(self, memo):
-        print("insert_memo:", memo)
-        content_md = markdownify(memo['content'])
-        parent = {"database_id": self.notion_helper.page_id, "type": "database_id"}
-        content_text = html2text.html2text(memo['content'])
-        properties = {
-            "标题": notion_utils.get_title(
-                truncate_string(content_text)
-            ),
-            "标签": notion_utils.get_multi_select(
-                memo['tags']
-            ),
-            "是否置顶": notion_utils.get_select("否" if memo['pin'] == 0 else "是"),
-            # 文件的处理方式待定
-            # "文件": notion_utils.get_file(""),
-            # slug是文章唯一标识
-            "slug": notion_utils.get_rich_text(memo['slug']),
-            "创建时间": notion_utils.get_date(memo['created_at']),
-            "更新时间": notion_utils.get_date(memo['updated_at']),
-            "来源": notion_utils.get_select(memo['source']),
-            "链接数量": notion_utils.get_number(memo['linked_count']),
-        }
+def insert_memo(self, memo):
+    print("insert_memo:", memo)
+    content_md = markdownify(memo['content'])
+    parent = {"database_id": self.notion_helper.page_id, "type": "database_id"}
+    content_text = html2text.html2text(memo['content'])
+    
+    def clean_and_truncate_tag(tag):
+        # 移除逗号并截断到100个字符
+        return tag.replace(',', '')[:100]
+    
+    # 处理标签
+    cleaned_tags = [clean_and_truncate_tag(tag) for tag in memo['tags']]
+    
+    properties = {
+        "标题": notion_utils.get_title(
+            truncate_string(content_text)
+        ),
+        "标签": notion_utils.get_multi_select(
+            cleaned_tags
+        ),
+        "是否置顶": notion_utils.get_select("否" if memo['pin'] == 0 else "是"),
+        "slug": notion_utils.get_rich_text(memo['slug']),
+        "创建时间": notion_utils.get_date(memo['created_at']),
+        "更新时间": notion_utils.get_date(memo['updated_at']),
+        "来源": notion_utils.get_select(memo['source'].replace(',', '')[:100]),
+        "链接数量": notion_utils.get_number(memo['linked_count']),
+    }
 
-        random_cover = random.choice(cover)
-        print(f"Random element: {random_cover}")
+    random_cover = random.choice(cover)
+    print(f"Random element: {random_cover}")
 
+    try:
         page = self.notion_helper.client.pages.create(
             parent=parent,
             icon=notion_utils.get_icon("https://www.notion.so/icons/target_red.svg"),
@@ -54,6 +61,15 @@ class Flomo2Notion:
 
         # 在page里面添加content
         self.uploader.uploadSingleFileContent(self.notion_helper.client, content_md, page['id'])
+        print(f"Successfully inserted memo with slug: {memo['slug']}")
+    except notion_client.errors.APIResponseError as e:
+        print(f"Error inserting memo: {e}")
+        print(f"Problematic memo: {memo}")
+        print(f"Skipping memo with slug: {memo['slug']}")
+    except Exception as e:
+        print(f"Unexpected error inserting memo: {e}")
+        print(f"Problematic memo: {memo}")
+        print(f"Skipping memo with slug: {memo['slug']}")
 
     def update_memo(self, memo, page_id):
         print("update_memo:", memo)
