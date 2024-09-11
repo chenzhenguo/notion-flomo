@@ -20,11 +20,11 @@ class Flomo2Notion:
         self.notion_helper = NotionHelper()
         self.uploader = Md2NotionUploader()
 
-def insert_memo(self, memo):
-    print("insert_memo:", memo)
-    content_md = markdownify(memo['content'])
-    parent = {"database_id": self.notion_helper.page_id, "type": "database_id"}
-    content_text = html2text.html2text(memo['content'])
+    def insert_memo(self, memo):
+        print("insert_memo:", memo)
+        content_md = markdownify(memo['content'])
+        parent = {"database_id": self.notion_helper.page_id, "type": "database_id"}
+        content_text = html2text.html2text(memo['content'])
     
     def clean_and_truncate_tag(tag):
         # 移除逗号并截断到100个字符
