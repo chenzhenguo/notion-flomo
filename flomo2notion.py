@@ -13,11 +13,6 @@ from notionify.notion_cover_list import cover
 from notionify.notion_helper import NotionHelper
 from utils import truncate_string, is_within_n_days
 
-
-
-
-
-
 class Flomo2Notion:
     def __init__(self):
         self.flomo_api = FlomoApi()
@@ -26,7 +21,6 @@ class Flomo2Notion:
 
     @staticmethod
     def clean_and_truncate_tag(tag):
-        # 移除逗号并截断到100个字符
         return tag.replace(',', '')[:100]
 
     def insert_memo(self, memo):
@@ -35,16 +29,11 @@ class Flomo2Notion:
         parent = {"database_id": self.notion_helper.page_id, "type": "database_id"}
         content_text = html2text.html2text(memo['content'])
         
-        # 处理标签
         cleaned_tags = [self.clean_and_truncate_tag(tag) for tag in memo['tags']]
         
         properties = {
-            "标题": notion_utils.get_title(
-                truncate_string(content_text)
-            ),
-            "标签": notion_utils.get_multi_select(
-                cleaned_tags
-            ),
+            "标题": notion_utils.get_title(truncate_string(content_text, 100)),
+            "标签": notion_utils.get_multi_select(cleaned_tags),
             "是否置顶": notion_utils.get_select("否" if memo['pin'] == 0 else "是"),
             "slug": notion_utils.get_rich_text(memo['slug']),
             "创建时间": notion_utils.get_date(memo['created_at']),
@@ -64,8 +53,7 @@ class Flomo2Notion:
                 properties=properties,
             )
 
-            # 在page里面添加content
-            self.uploader.uploadSingleFileContent(self.notion_helper.client, content_md, page['id'])
+            self.upload_content_in_chunks(content_md, page['id'])
             print(f"Successfully inserted memo with slug: {memo['slug']}")
         except notion_client.errors.APIResponseError as e:
             print(f"Error inserting memo: {e}")
@@ -80,31 +68,49 @@ class Flomo2Notion:
         print("update_memo:", memo)
 
         content_md = markdownify(memo['content'])
-        # 只更新内容
         content_text = html2text.html2text(memo['content'])
         properties = {
-            "标题": notion_utils.get_title(
-                truncate_string(content_text)
-            ),
+            "标题": notion_utils.get_title(truncate_string(content_text, 100)),
             "更新时间": notion_utils.get_date(memo['updated_at']),
             "链接数量": notion_utils.get_number(memo['linked_count']),
-            "标签": notion_utils.get_multi_select(
-                memo['tags']
-            ),
+            "标签": notion_utils.get_multi_select([self.clean_and_truncate_tag(tag) for tag in memo['tags']]),
             "是否置顶": notion_utils.get_select("否" if memo['pin'] == 0 else "是"),
         }
         page = self.notion_helper.client.pages.update(page_id=page_id, properties=properties)
 
-        # 先清空page的内容，再重新写入
         self.notion_helper.clear_page_content(page["id"])
+        self.upload_content_in_chunks(content_md, page['id'])
 
-        self.uploader.uploadSingleFileContent(self.notion_helper.client, content_md, page['id'])
+    def upload_content_in_chunks(self, content, page_id):
+        # Split content into smaller chunks
+        chunks = self.split_content(content)
+        for chunk in chunks:
+            try:
+                self.uploader.uploadSingleFileContent(self.notion_helper.client, chunk, page_id)
+            except notion_client.errors.APIResponseError as e:
+                print(f"Error uploading chunk: {e}")
+                print(f"Problematic chunk: {chunk[:100]}...")  # Print first 100 characters of the chunk
 
-    # 具体步骤：
-    # 1. 调用flomo web端的api从flomo获取数据
-    # 2. 轮询flomo的列表数据，调用notion api将数据同步写入到database中的page
+    @staticmethod
+    def split_content(content, max_length=100):
+        lines = content.split('\n')
+        chunks = []
+        current_chunk = ""
+        
+        for line in lines:
+            if len(current_chunk) + len(line) > max_length:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = line + '\n'
+            else:
+                current_chunk += line + '\n'
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
+
     def sync_to_notion(self):
-        # 1. 调用flomo web端的api从flomo获取数据
         authorization = os.getenv("FLOMO_TOKEN")
         memo_list = []
         latest_updated_at = "0"
@@ -116,18 +122,11 @@ class Flomo2Notion:
             memo_list.extend(new_memo_list)
             latest_updated_at = str(int(time.mktime(time.strptime(new_memo_list[-1]['updated_at'], "%Y-%m-%d %H:%M:%S"))))
 
-        # 2. 调用notion api获取数据库存在的记录，用slug标识唯一，如果存在则更新，不存在则写入
         notion_memo_list = self.notion_helper.query_all(self.notion_helper.page_id)
-        slug_map = {}
-        for notion_memo in notion_memo_list:
-            slug_map[notion_utils.get_rich_text_from_result(notion_memo, "slug")] = notion_memo.get("id")
+        slug_map = {notion_utils.get_rich_text_from_result(notion_memo, "slug"): notion_memo.get("id") for notion_memo in notion_memo_list}
 
-        # 3. 轮询flomo的列表数据
         for memo in memo_list:
-            # 3.1 判断memo的slug是否存在，不存在则写入
-            # 3.2 防止大批量更新，只更新更新时间为制定时间的数据（默认为7天）
-            if memo['slug'] in slug_map.keys():
-                # 是否全量更新，默认否
+            if memo['slug'] in slug_map:
                 full_update = os.getenv("FULL_UPDATE", False)
                 interval_day = os.getenv("UPDATE_INTERVAL_DAY", 7)
                 if not full_update and not is_within_n_days(memo['updated_at'], interval_day):
@@ -139,11 +138,6 @@ class Flomo2Notion:
             else:
                 self.insert_memo(memo)
 
-
 if __name__ == "__main__":
-    # flomo同步到notion入口
     flomo2notion = Flomo2Notion()
     flomo2notion.sync_to_notion()
-
-    # notionify key
-    # secret_IHWKSLUTqUh3A8TIKkeXWePu3PucwHiRwDEcqNp5uT3
